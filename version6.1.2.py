@@ -181,7 +181,7 @@ def convert_df_to_csv(df):
     return processed_data
     
 # Streamlit App
-st.title("Mwiine's Data Analytics App")
+st.title("Data Analytics")
 
 uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
 
