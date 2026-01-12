@@ -8,9 +8,9 @@ import statsmodels.api as sm
 from scipy import stats
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score, confusion_matrix
+from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, confusion_matrix, classification_report
 from sklearn.cluster import KMeans
 from io import BytesIO
 import pickle
@@ -41,11 +41,17 @@ def handle_missing_values(df, method, fill_value=None):
     elif method == "Drop Columns":
         return df.dropna(axis=1)
     elif method == "Fill with Mean":
-        return df.fillna(df.mean())
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
+        return df
     elif method == "Fill with Median":
-        return df.fillna(df.median())
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
+        return df
     elif method == "Fill with Mode":
-        return df.fillna(df.mode().iloc[0])
+        for col in df.columns:
+            df[col] = df[col].fillna(df[col].mode().iloc[0] if not df[col].mode().empty else np.nan)
+        return df
     elif method == "Fill with Custom Value":
         return df.fillna(fill_value)
     return df
@@ -71,271 +77,354 @@ def handle_outliers(df, method):
         if method == "Remove Outliers":
             df = df[(df[col] >= lower_bound) & (df[col] <= upper_bound)]
         elif method == "Replace with Mean":
-            df[col] = np.where((df[col] < lower_bound) | (df[col] > upper_bound), df[col].mean(), df[col])
+            mean_val = df[col].mean()
+            df.loc[(df[col] < lower_bound) | (df[col] > upper_bound), col] = mean_val
         elif method == "Replace with Median":
-            df[col] = np.where((df[col] < lower_bound) | (df[col] > upper_bound), df[col].median(), df[col])
+            median_val = df[col].median()
+            df.loc[(df[col] < lower_bound) | (df[col] > upper_bound), col] = median_val
     return df
 
 # Function for feature engineering
-def feature_engineering(df):
-    df['New_Feature_Sum'] = df.select_dtypes(include=[np.number]).sum(axis=1)
-    df['New_Feature_Product'] = df.select_dtypes(include=[np.number]).prod(axis=1)
+def feature_engineering(df, sum_feature=True, product_feature=False):
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    if sum_feature:
+        df['New_Feature_Sum'] = df[numeric_cols].sum(axis=1)
+    if product_feature:
+        # Avoid overflow by using log product or skip if zeros
+        if (df[numeric_cols] == 0).any().any():
+            st.warning("Product feature skipped due to zeros in data.")
+        else:
+            df['New_Feature_Product'] = df[numeric_cols].prod(axis=1)
     return df
 
 # Function for regression analysis
 def regression_analysis(df, x_columns, y_column):
-    X = df[x_columns]
-    y = df[y_column]
-    X = sm.add_constant(X)
-    model = sm.OLS(y, X).fit()
-    return model.summary()
+    try:
+        X = df[x_columns]
+        y = df[y_column]
+        X = sm.add_constant(X)
+        model = sm.OLS(y, X).fit()
+        return model.summary()
+    except Exception as e:
+        return f"Error in regression: {str(e)}"
 
 # Hypothesis Testing: t-test, ANOVA, Chi-square
 def perform_t_test(df, col1, col2):
-    stat, p_value = stats.ttest_ind(df[col1], df[col2], nan_policy='omit')
-    return stat, p_value
+    try:
+        stat, p_value = stats.ttest_ind(df[col1].dropna(), df[col2].dropna())
+        return stat, p_value
+    except:
+        return None, None
 
 def perform_anova(df, group_col, value_col):
-    groups = [df[df[group_col] == group][value_col] for group in df[group_col].unique()]
-    stat, p_value = stats.f_oneway(*groups)
-    return stat, p_value
+    try:
+        groups = [df[df[group_col] == group][value_col].dropna() for group in df[group_col].unique()]
+        stat, p_value = stats.f_oneway(*groups)
+        return stat, p_value
+    except:
+        return None, None
 
 def perform_chi_square(df, col1, col2):
-    contingency_table = pd.crosstab(df[col1], df[col2])
-    chi2_stat, p_value, dof, expected = stats.chi2_contingency(contingency_table)
-    return chi2_stat, p_value
+    try:
+        contingency_table = pd.crosstab(df[col1], df[col2])
+        chi2_stat, p_value, dof, expected = stats.chi2_contingency(contingency_table)
+        return chi2_stat, p_value
+    except:
+        return None, None
 
 # Function for Machine Learning Models
-def train_ml_model(df, x_columns, y_column, model_type="Linear Regression"):
-    X = df[x_columns]
-    y = df[y_column]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    if model_type == "Linear Regression":
-        model = LinearRegression()
-    elif model_type == "Decision Tree":
-        model = DecisionTreeRegressor()
-    elif model_type == "Random Forest":
-        model = RandomForestRegressor()
-    
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    
-    # Performance Metrics
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    r2 = r2_score(y_test, y_pred)
-    
-    return model, y_test, y_pred, rmse, r2
+def train_ml_model(df, x_columns, y_column, model_type="Linear Regression", task_type="Regression"):
+    try:
+        X = df[x_columns]
+        y = df[y_column]
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        if task_type == "Regression":
+            if model_type == "Linear Regression":
+                model = LinearRegression()
+            elif model_type == "Decision Tree":
+                model = DecisionTreeRegressor(random_state=42)
+            elif model_type == "Random Forest":
+                model = RandomForestRegressor(random_state=42)
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+            r2 = r2_score(y_test, y_pred)
+            metrics = {"RMSE": rmse, "R2": r2}
+            if hasattr(model, 'coef_'):
+                coef = model.coef_
+            else:
+                coef = None
+        else:  # Classification
+            if model_type == "Decision Tree":
+                model = DecisionTreeClassifier(random_state=42)
+            elif model_type == "Random Forest":
+                model = RandomForestClassifier(random_state=42)
+            else:
+                raise ValueError("Linear Regression not suitable for classification.")
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            conf_mat = confusion_matrix(y_test, y_pred)
+            class_report = classification_report(y_test, y_pred, output_dict=True)
+            metrics = {"Accuracy": accuracy, "Confusion Matrix": conf_mat, "Classification Report": class_report}
+            coef = None
+        
+        return model, y_test, y_pred, metrics, coef
+    except Exception as e:
+        st.error(f"Error training model: {str(e)}")
+        return None, None, None, None, None
 
 # Function for K-Means Clustering
-def kmeans_clustering(df, num_clusters):
-    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
-    df['Cluster'] = kmeans.fit_predict(df.select_dtypes(include=[np.number]))
-    return df, kmeans
+def kmeans_clustering(df, features, num_clusters):
+    try:
+        kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+        df['Cluster'] = kmeans.fit_predict(df[features])
+        return df, kmeans
+    except:
+        return df, None
 
-# Function to plot K-Means Clusters
-def plot_kmeans_clusters(df, num_clusters):
-    fig = px.scatter(df, x=df.columns[0], y=df.columns[1], color='Cluster', title=f"K-Means Clustering with {num_clusters} Clusters")
+# Function to plot K-Means Clusters (improved to select x and y)
+def plot_kmeans_clusters(df, x_col, y_col):
+    fig = px.scatter(df, x=x_col, y=y_col, color='Cluster', title="K-Means Clustering")
     return fig
-
-# Function to save the trained model
-def save_model(model, filename):
-    with open(filename, 'wb') as f:
-        pickle.dump(model, f)
-
 
 # Function to detect strong linear relationships
 def detect_strong_linear_relationships(df, threshold=0.8):
-    corr_matrix = df.corr()
-    strong_corr_pairs = []
+    corr_matrix = df.corr(numeric_only=True)
+    strong_corr_pairs = set()
     for col1 in corr_matrix.columns:
         for col2 in corr_matrix.columns:
-            if col1 != col2 and abs(corr_matrix[col1][col2]) >= threshold:
-                strong_corr_pairs.append((col1, col2, corr_matrix[col1][col2]))
-    return strong_corr_pairs
+            if col1 < col2 and abs(corr_matrix[col1][col2]) >= threshold:
+                strong_corr_pairs.add((col1, col2, corr_matrix[col1][col2]))
+    return list(strong_corr_pairs)
 
-# Function to detect non-linear relationships using Decision Tree Regressor
+# Function to detect non-linear relationships
 def detect_non_linear_relationships(df, target_column, threshold=0.1):
-    X = df.drop(columns=[target_column])
-    y = df[target_column]
-    
-    # Linear regression model
-    linear_model = LinearRegression()
-    linear_model.fit(X, y)
-    y_pred_linear = linear_model.predict(X)
-    linear_rmse = np.sqrt(mean_squared_error(y, y_pred_linear))
-    
-    # Decision tree model (non-linear)
-    tree_model = DecisionTreeRegressor(random_state=42)
-    tree_model.fit(X, y)
-    y_pred_tree = tree_model.predict(X)
-    tree_rmse = np.sqrt(mean_squared_error(y, y_pred_tree))
-    
-    return linear_rmse, tree_rmse
+    try:
+        df_numeric = df.select_dtypes(include=[np.number]).dropna()
+        if target_column not in df_numeric.columns:
+            return None, None
+        X = df_numeric.drop(columns=[target_column])
+        y = df_numeric[target_column]
+        if X.empty or len(X) < 2:
+            return None, None
+        
+        linear_model = LinearRegression()
+        linear_model.fit(X, y)
+        y_pred_linear = linear_model.predict(X)
+        linear_rmse = np.sqrt(mean_squared_error(y, y_pred_linear))
+        
+        tree_model = DecisionTreeRegressor(random_state=42)
+        tree_model.fit(X, y)
+        y_pred_tree = tree_model.predict(X)
+        tree_rmse = np.sqrt(mean_squared_error(y, y_pred_tree))
+        
+        return linear_rmse, tree_rmse
+    except:
+        return None, None
 
 # Function to download processed data
 def convert_df_to_csv(df):
     output = BytesIO()
     df.to_csv(output, index=False)
-    processed_data = output.getvalue()
-    return processed_data
-    
+    output.seek(0)
+    return output.getvalue()
+
 # Streamlit App
-st.title("📊 Data Analytics")
+st.title("📊 Advanced Data Analytics Dashboard")
+
+# Use session state to persist data
+if 'df' not in st.session_state:
+    st.session_state.df = None
 
 uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
 
 if uploaded_file:
-    df = load_data(uploaded_file)
-    st.write("### Preview of Data")
-    st.dataframe(df.head())
-    
-    # Missing values analysis
-    st.write("### Missing Values Analysis")
-    st.dataframe(missing_values_analysis(df))
-    
-    # Handle missing values
-    missing_value_method = st.selectbox("Choose how to handle missing values", 
-                                       ["None", "Drop Rows", "Drop Columns", "Fill with Mean", "Fill with Median", "Fill with Mode", "Fill with Custom Value"], key="missing_values")
-    custom_fill_value = None
-    if missing_value_method == "Fill with Custom Value":
-        custom_fill_value = st.text_input("Enter Custom Value", key="custom_fill_value")
-    
-    if missing_value_method != "None":
-        df = handle_missing_values(df, missing_value_method, custom_fill_value)
-        st.write("### Data After Handling Missing Values")
-        st.dataframe(df.head())
-    
-    # Outlier analysis
-    st.write("### Outlier Detection")
-    st.dataframe(detect_outliers(df))
-    
-    # Handle outliers
-    outlier_method = st.selectbox("Choose how to handle outliers", ["None", "Remove Outliers", "Replace with Mean", "Replace with Median"], key="outlier_handling")
-    if outlier_method != "None":
-        df = handle_outliers(df, outlier_method)
-        st.write("### Data After Handling Outliers")
-        st.dataframe(df.head())
-    
-    # Feature engineering
-    st.write("### Feature Engineering")
-    df = feature_engineering(df)
-    st.write("### Data After Feature Engineering")
-    st.dataframe(df.head())
-    
-    # Descriptive statistics
-    st.write("### Descriptive Statistics")
-    st.dataframe(df.describe())
-    
-    # Correlation analysis
-    st.write("### Correlation Matrix")
-    fig, ax = plt.subplots()
-    sns.heatmap(df.corr(), annot=True, cmap="coolwarm", ax=ax)
-    st.pyplot(fig)
+    st.session_state.df = load_data(uploaded_file)
+    st.success("File uploaded successfully!")
 
-    # Strong Linear Relationships Detection
-    st.write("### Detect Strong Linear Relationships")
-    linear_relationships = detect_strong_linear_relationships(df)
-    if linear_relationships:
-        st.write(f"Strong Linear Relationships (Correlation > 0.8):")
-        for col1, col2, corr_value in linear_relationships:
-            st.write(f"{col1} and {col2}: Correlation = {corr_value:.2f}")
-    else:
-        st.write("No strong linear relationships found.")
+if st.session_state.df is not None:
+    df = st.session_state.df.copy()  # Work on a copy to avoid modifying original
 
-    #Strong non linear relationships
-    def detect_non_linear_relationships(df, target):
-        from sklearn.linear_model import LinearRegression
-        from sklearn.tree import DecisionTreeRegressor
-        from sklearn.metrics import mean_squared_error
-        import numpy as np
-        import pandas as pd
-        
-        df = df.select_dtypes(exclude=['datetime64'])
-        
-        X = df.drop(columns=[target])  # Exclude target from features
-        y = df[target]
-        
-        X = X.apply(pd.to_numeric, errors='coerce')
-        y = pd.to_numeric(y, errors='coerce')
-        
-        X = X.dropna()
-        y = y.loc[X.index]  # Keep only rows where X has values
-        
-        linear_model = LinearRegression()
-        tree_model = DecisionTreeRegressor()
-        
-        linear_model.fit(X, y)
-        tree_model.fit(X, y)
-        
-        linear_pred = linear_model.predict(X)
-        tree_pred = tree_model.predict(X)
-        
-        linear_rmse = np.sqrt(mean_squared_error(y, linear_pred))
-        tree_rmse = np.sqrt(mean_squared_error(y, tree_pred))
-        
-        return linear_rmse, tree_rmse
+    # Use tabs for better UI organization
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Data Preview & Cleaning", "Exploratory Analysis", "Feature Engineering", "Statistical Tests", "Machine Learning", "Clustering"])
 
-    # Regression Analysis
-    st.write("### Regression Analysis")
-    target = st.selectbox("Select Dependent Variable (Y)", df.columns, key="regression_target")
-    predictors = st.multiselect("Select Independent Variables (X)", [col for col in df.columns if col != target], key="regression_predictors")
-    
-    if st.button("Run Regression Analysis"):
-        reg_summary = regression_analysis(df, predictors, target)
-        st.text(reg_summary)
-    
-    # Hypothesis Testing
-    st.write("### Hypothesis Testing")
-    test_type = st.selectbox("Select Hypothesis Test", ["T-Test", "ANOVA", "Chi-Square"], key="hypothesis_test")
-
-    if test_type == "T-Test":
-        col1 = st.selectbox("Select Column 1", df.columns, key="t_test_col1")
-        col2 = st.selectbox("Select Column 2", df.columns, key="t_test_col2")
-        if st.button("Run T-Test"):
-            stat, p_value = perform_t_test(df, col1, col2)
-            st.write(f"T-Statistic: {stat}, P-Value: {p_value}")
-    elif test_type == "ANOVA":
-        group_col = st.selectbox("Select Group Column", df.columns, key="anova_group_col")
-        value_col = st.selectbox("Select Value Column", df.columns, key="anova_value_col")
-        if st.button("Run ANOVA"):
-            stat, p_value = perform_anova(df, group_col, value_col)
-            st.write(f"F-Statistic: {stat}, P-Value: {p_value}")
-    elif test_type == "Chi-Square":
-        col1 = st.selectbox("Select Column 1", df.columns, key="chi_square_col1")
-        col2 = st.selectbox("Select Column 2", df.columns, key="chi_square_col2")
-        if st.button("Run Chi-Square Test"):
-            chi2_stat, p_value = perform_chi_square(df, col1, col2)
-            st.write(f"Chi-Square Stat: {chi2_stat}, P-Value: {p_value}")
-
-    # Machine Learning Models
-    st.write("### Machine Learning Models")
-    model_type = st.selectbox("Select Model Type", ["Linear Regression", "Decision Tree", "Random Forest"], key="ml_model_type")
-    target = st.selectbox("Select Dependent Variable (Y)", df.columns, key="ml_target")
-    predictors = st.multiselect("Select Independent Variables (X)", [col for col in df.columns if col != target], key="ml_predictors")
-
-    if st.button("Train Model"):
-        model, y_test, y_pred, rmse, r2 = train_ml_model(df, predictors, target, model_type)
-        st.write(f"RMSE: {rmse}")
-        st.write(f"R^2: {r2}")
-        st.write(f"Model Coefficients: {model.coef_}")
-        # Provide an option to save the trained model
-        if st.button("Save Model"):
-            filename = "trained_model.pkl"  # Name of the file to save the model
-            save_model(model, filename)
-            st.success(f"Model saved as {filename}")
+    with tab1:
+        st.header("Data Preview")
+        st.dataframe(df.head(10))
         
-    # K-Means Clustering
-    st.write("### K-Means Clustering")
-    num_clusters = st.slider("Select Number of Clusters", min_value=2, max_value=10, value=3, key="kmeans_clusters")
-    if st.button("Run K-Means Clustering"):
-        df_clustered, kmeans = kmeans_clustering(df, num_clusters)
-        st.write(f"Cluster Centers: {kmeans.cluster_centers_}")
-        st.write("### Data with Clusters")
-        st.dataframe(df_clustered.head())
-        fig = plot_kmeans_clusters(df_clustered, num_clusters)
-        st.plotly_chart(fig)
-    
-    # Download processed data
-    processed_data = convert_df_to_csv(df)
-    st.download_button("Download Processed Data", processed_data, "processed_data.csv", "text/csv")
+        st.header("Missing Values Analysis")
+        st.dataframe(missing_values_analysis(df))
+        
+        missing_value_method = st.selectbox("Handle Missing Values", 
+                                            ["None", "Drop Rows", "Drop Columns", "Fill with Mean", "Fill with Median", "Fill with Mode", "Fill with Custom Value"])
+        custom_fill_value = None
+        if missing_value_method == "Fill with Custom Value":
+            custom_fill_value = st.text_input("Custom Value")
+        
+        if missing_value_method != "None" and st.button("Apply Missing Value Handling"):
+            df = handle_missing_values(df, missing_value_method, custom_fill_value)
+            st.session_state.df = df
+            st.success("Missing values handled!")
+            st.dataframe(df.head())
+        
+        st.header("Outlier Detection")
+        st.dataframe(detect_outliers(df))
+        
+        outlier_method = st.selectbox("Handle Outliers", ["None", "Remove Outliers", "Replace with Mean", "Replace with Median"])
+        if outlier_method != "None" and st.button("Apply Outlier Handling"):
+            df = handle_outliers(df, outlier_method)
+            st.session_state.df = df
+            st.success("Outliers handled!")
+            st.dataframe(df.head())
+
+    with tab2:
+        st.header("Descriptive Statistics")
+        st.dataframe(df.describe())
+        
+        st.header("Correlation Matrix")
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(df.corr(numeric_only=True), annot=True, cmap="coolwarm", ax=ax)
+        st.pyplot(fig)
+        
+        st.header("Strong Linear Relationships (Corr > 0.8)")
+        linear_relationships = detect_strong_linear_relationships(df)
+        if linear_relationships:
+            for col1, col2, corr_value in linear_relationships:
+                st.write(f"{col1} and {col2}: {corr_value:.2f}")
+        else:
+            st.write("No strong linear relationships found.")
+        
+        st.header("Non-Linear Relationships Detection")
+        target_nonlin = st.selectbox("Select Target for Non-Linear Check", df.columns)
+        if st.button("Check Non-Linear Relationships"):
+            linear_rmse, tree_rmse = detect_non_linear_relationships(df, target_nonlin)
+            if linear_rmse is not None:
+                st.write(f"Linear RMSE: {linear_rmse:.2f}")
+                st.write(f"Tree RMSE: {tree_rmse:.2f}")
+                if tree_rmse < linear_rmse * 0.9:
+                    st.write("Potential non-linear relationships detected (Tree model performs better).")
+                else:
+                    st.write("Relationships appear mostly linear.")
+        
+        # Added visualizations
+        st.header("Visualizations")
+        viz_type = st.selectbox("Select Visualization Type", ["Histogram", "Box Plot", "Scatter Plot"])
+        if viz_type == "Histogram":
+            col = st.selectbox("Select Column", df.columns)
+            fig = px.histogram(df, x=col)
+            st.plotly_chart(fig)
+        elif viz_type == "Box Plot":
+            col = st.selectbox("Select Column", df.columns)
+            fig = px.box(df, y=col)
+            st.plotly_chart(fig)
+        elif viz_type == "Scatter Plot":
+            x_col = st.selectbox("X Column", df.columns)
+            y_col = st.selectbox("Y Column", df.columns)
+            fig = px.scatter(df, x=x_col, y=y_col)
+            st.plotly_chart(fig)
+
+    with tab3:
+        st.header("Feature Engineering")
+        add_sum = st.checkbox("Add Sum Feature", value=True)
+        add_product = st.checkbox("Add Product Feature (Careful with zeros/large numbers)")
+        if st.button("Apply Feature Engineering"):
+            df = feature_engineering(df, sum_feature=add_sum, product_feature=add_product)
+            st.session_state.df = df
+            st.success("Features added!")
+            st.dataframe(df.head())
+
+    with tab4:
+        st.header("Regression Analysis")
+        reg_target = st.selectbox("Dependent Variable (Y)", df.columns)
+        reg_predictors = st.multiselect("Independent Variables (X)", [col for col in df.columns if col != reg_target])
+        if st.button("Run Regression"):
+            if reg_predictors:
+                reg_summary = regression_analysis(df, reg_predictors, reg_target)
+                st.text(reg_summary)
+            else:
+                st.warning("Select at least one predictor.")
+        
+        st.header("Hypothesis Testing")
+        test_type = st.selectbox("Test Type", ["T-Test", "ANOVA", "Chi-Square"])
+        if test_type == "T-Test":
+            col1 = st.selectbox("Column 1", df.columns)
+            col2 = st.selectbox("Column 2", df.columns)
+            if st.button("Run T-Test"):
+                stat, p_value = perform_t_test(df, col1, col2)
+                if stat is not None:
+                    st.write(f"T-Statistic: {stat:.2f}, P-Value: {p_value:.4f}")
+        elif test_type == "ANOVA":
+            group_col = st.selectbox("Group Column", df.columns)
+            value_col = st.selectbox("Value Column", df.columns)
+            if st.button("Run ANOVA"):
+                stat, p_value = perform_anova(df, group_col, value_col)
+                if stat is not None:
+                    st.write(f"F-Statistic: {stat:.2f}, P-Value: {p_value:.4f}")
+        elif test_type == "Chi-Square":
+            col1 = st.selectbox("Column 1", df.columns)
+            col2 = st.selectbox("Column 2", df.columns)
+            if st.button("Run Chi-Square"):
+                chi2_stat, p_value = perform_chi_square(df, col1, col2)
+                if chi2_stat is not None:
+                    st.write(f"Chi-Square: {chi2_stat:.2f}, P-Value: {p_value:.4f}")
+
+    with tab5:
+        st.header("Machine Learning Models")
+        task_type = st.radio("Task Type", ["Regression", "Classification"])
+        model_type = st.selectbox("Model Type", ["Linear Regression" if task_type == "Regression" else "", "Decision Tree", "Random Forest"])
+        ml_target = st.selectbox("Target Variable (Y)", df.columns)
+        ml_predictors = st.multiselect("Features (X)", [col for col in df.columns if col != ml_target])
+        if st.button("Train Model"):
+            if ml_predictors and model_type:
+                model, y_test, y_pred, metrics, coef = train_ml_model(df, ml_predictors, ml_target, model_type, task_type)
+                if model:
+                    st.subheader("Model Performance")
+                    for key, value in metrics.items():
+                        if isinstance(value, np.ndarray):
+                            st.write(f"{key}:")
+                            st.write(value)
+                        elif isinstance(value, dict):
+                            st.write(f"{key}:")
+                            st.json(value)
+                        else:
+                            st.write(f"{key}: {value:.4f}")
+                    if coef is not None:
+                        st.write("Coefficients:", coef)
+                    if st.button("Save Trained Model"):
+                        save_model(model, "trained_model.pkl")
+                        st.success("Model saved!")
+            else:
+                st.warning("Select predictors and model type.")
+
+    with tab6:
+        st.header("K-Means Clustering")
+        cluster_features = st.multiselect("Select Features for Clustering", df.select_dtypes(include=[np.number]).columns)
+        num_clusters = st.slider("Number of Clusters", 2, 10, 3)
+        if st.button("Run K-Means"):
+            if cluster_features:
+                df, kmeans = kmeans_clustering(df, cluster_features, num_clusters)
+                st.session_state.df = df
+                if kmeans:
+                    st.write("Cluster Centers:")
+                    st.dataframe(pd.DataFrame(kmeans.cluster_centers_, columns=cluster_features))
+                    st.dataframe(df.head())
+                    
+                    st.subheader("Cluster Visualization")
+                    if len(cluster_features) >= 2:
+                        x_col = st.selectbox("X Axis", cluster_features)
+                        y_col = st.selectbox("Y Axis", cluster_features)
+                        fig = plot_kmeans_clusters(df, x_col, y_col)
+                        st.plotly_chart(fig)
+                    else:
+                        st.warning("Need at least 2 features for 2D plot.")
+            else:
+                st.warning("Select features.")
+
+    # Download at the end
+    st.header("Download Processed Data")
+    processed_data = convert_df_to_csv(st.session_state.df)
+    st.download_button("Download CSV", processed_data, "processed_data.csv", "text/csv")
+else:
+    st.info("Upload a file to get started.")
