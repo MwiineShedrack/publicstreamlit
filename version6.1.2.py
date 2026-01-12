@@ -238,7 +238,7 @@ st.title("Advanced Data Analytics Dashboard")
 if 'df' not in st.session_state:
     st.session_state.df = None
 
-uploaded_file = st.file_uploader(" To begin analysis, please upload your desired CSV or Excel file", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader(" Data Preview & Cleaning, Exploratory Analysis, Feature Engineering, Statistical Tests, Machine Learning, Clustering", type=["csv", "xlsx"])
 
 if uploaded_file:
     st.session_state.df = load_data(uploaded_file)
