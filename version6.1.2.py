@@ -232,13 +232,13 @@ def convert_df_to_csv(df):
     return output.getvalue()
 
 # Streamlit App
-st.title("📊 Advanced Data Analytics Dashboard")
+st.title("Advanced Data Analytics Dashboard")
 
 # Use session state to persist data
 if 'df' not in st.session_state:
     st.session_state.df = None
 
-uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader(" To begin analysis, please upload your desired CSV or Excel file", type=["csv", "xlsx"])
 
 if uploaded_file:
     st.session_state.df = load_data(uploaded_file)
